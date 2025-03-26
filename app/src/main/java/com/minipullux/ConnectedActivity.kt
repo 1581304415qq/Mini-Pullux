@@ -18,10 +18,12 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -77,6 +79,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.minipullux.service.BLECharacteristic
 import com.minipullux.ui.theme.CyberpunkTheme
 import kotlinx.coroutines.delay
 import java.util.UUID
@@ -111,9 +114,14 @@ fun ConnectedScreen(
     ConnectedContent(
         characteristics = characteristics,
         values = values,
-        onRead = { /* 预览中不处理实际逻辑 */ },
-        onWrite = { _, _ -> /* 预览中不处理实际逻辑 */ },
-        onToggleNotify = { /* 预览中不处理实际逻辑 */ }
+        onRead = { viewModel.read(it) },
+        onWrite = { char, value -> viewModel.write(char, value) },
+        onToggleNotify = { characteristic, enable ->
+            viewModel.onToggleNotify(
+                characteristic,
+                enable
+            )
+        }
     )
 }
 
@@ -124,15 +132,17 @@ fun ByteArray.toHexString(): String =
 @Composable
 fun ConnectedContentPre() {
     // 模拟一些数据
-    val characteristic1 = BluetoothGattCharacteristic(
+    val characteristic1 = BLECharacteristic(
         UUID.randomUUID(),
         BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_WRITE,
-        BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE
+        BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE,
+        false
     )
-    val characteristic2 = BluetoothGattCharacteristic(
+    val characteristic2 = BLECharacteristic(
         UUID.randomUUID(),
         BluetoothGattCharacteristic.PROPERTY_NOTIFY,
-        BluetoothGattCharacteristic.PERMISSION_READ
+        BluetoothGattCharacteristic.PERMISSION_READ,
+        true
     )
     val characteristics = listOf(characteristic1, characteristic2)
     val values = mapOf(
@@ -146,20 +156,20 @@ fun ConnectedContentPre() {
             values = values,
             onRead = { /* 预览中不处理实际逻辑 */ },
             onWrite = { _, _ -> /* 预览中不处理实际逻辑 */ },
-            onToggleNotify = { /* 预览中不处理实际逻辑 */ }
+            onToggleNotify = { _, _ ->/* 预览中不处理实际逻辑 */ }
         )
     }
 }
 
 @Composable
 private fun ConnectedContent(
-    characteristics: List<BluetoothGattCharacteristic>,
+    characteristics: List<BLECharacteristic>,
     values: Map<UUID, ByteArray>,
-    onRead: (BluetoothGattCharacteristic) -> Unit,
-    onWrite: (BluetoothGattCharacteristic, ByteArray) -> Unit,
-    onToggleNotify: (BluetoothGattCharacteristic) -> Unit
+    onRead: (BLECharacteristic) -> Unit,
+    onWrite: (BLECharacteristic, ByteArray) -> Unit,
+    onToggleNotify: (BLECharacteristic, Boolean) -> Unit
 ) {
-    var selectedChar by remember { mutableStateOf<BluetoothGattCharacteristic?>(null) }
+    var selectedChar by remember { mutableStateOf<BLECharacteristic?>(null) }
 
     LazyColumn(
         modifier = Modifier
@@ -170,11 +180,11 @@ private fun ConnectedContent(
             CyberpunkCharacteristicCard(
                 characteristic = char,
                 value = values[char.uuid]?.toHexString() ?: "---",
-                onAction = { action ->
+                onAction = { action, param ->
                     when (action) {
                         CharacteristicAction.READ -> onRead(char)
                         CharacteristicAction.WRITE -> selectedChar = char
-                        CharacteristicAction.NOTIFY -> onToggleNotify(char)
+                        CharacteristicAction.NOTIFY -> onToggleNotify(char, param!!)
                     }
                 }
             )
@@ -203,9 +213,9 @@ enum class CharacteristicAction {
 // Cyberpunk 风格组件库
 @Composable
 fun CyberpunkCharacteristicCard(
-    characteristic: BluetoothGattCharacteristic,
+    characteristic: BLECharacteristic,
     value: String,
-    onAction: (CharacteristicAction) -> Unit
+    onAction: (CharacteristicAction, Boolean?) -> Unit
 ) {
     val neonBlue = Color(0xFF00FFE0)
     val neonPink = Color(0xFFFF00FF)
@@ -237,26 +247,31 @@ fun CyberpunkCharacteristicCard(
             isCharacteristicNotifiable(characteristic)
             characteristic.properties
             // 属性徽章
-            Row {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
                 if (isCharacteristicReadable(characteristic)) {
                     CyberpunkBadge(
                         text = "READ",
                         color = neonBlue,
-                        onClick = { onAction(CharacteristicAction.READ) }
+                        onClick = { onAction(CharacteristicAction.READ, null) }
                     )
                 }
                 if (isCharacteristicWritable(characteristic)) {
                     CyberpunkBadge(
                         text = "WRITE",
                         color = neonPink,
-                        onClick = { onAction(CharacteristicAction.WRITE) }
+                        onClick = { onAction(CharacteristicAction.WRITE, null) }
                     )
                 }
                 if (isCharacteristicNotifiable(characteristic)) {
                     CyberpunkBadge(
                         text = "NOTIFY",
                         color = Color(0xFF9D00FF),
-                        onClick = { onAction(CharacteristicAction.NOTIFY) }
+                        isActive = characteristic.isNotifyEnabled,
+                        onClick = {
+                            onAction(CharacteristicAction.NOTIFY, !characteristic.isNotifyEnabled)
+                        }
                     )
                 }
             }
@@ -338,6 +353,7 @@ fun CyberpunkBadge(
             )
             .background(backgroundColor, RoundedCornerShape(6.dp))
             .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clickable { onClick() }
     ) {
         Text(
             text = text,

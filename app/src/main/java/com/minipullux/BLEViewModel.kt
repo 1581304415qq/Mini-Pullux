@@ -14,28 +14,26 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
-import androidx.compose.runtime.mutableStateOf
-import androidx.core.content.ContextCompat.getSystemService
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.minipullux.service.BLECharacteristic
 import com.minipullux.service.BLEService
 import com.minipullux.service.BLEService.ConnectionState
 import com.minipullux.service.OnCharacteristicReadListener
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
 
 class BLEViewModel(application: Application) : AndroidViewModel(application) {
+    private val TAG = "BLEViewModel"
+
     private val _devices = MutableStateFlow(listOf<BLEDevice>())
     val devices get() = _devices.asStateFlow()
 
@@ -46,7 +44,7 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
     private val _connectionEvent = MutableSharedFlow<Event<ConnectionState>>()
     val connectionEvent: SharedFlow<Event<ConnectionState>> = _connectionEvent
 
-    private val _characteristics = MutableStateFlow<List<BluetoothGattCharacteristic>>(listOf())
+    private val _characteristics = MutableStateFlow<List<BLECharacteristic>>(listOf())
     val characteristics get() = _characteristics.asStateFlow()
 
     private val _values = MutableStateFlow<MutableMap<UUID, ByteArray>>(mutableMapOf())
@@ -148,12 +146,22 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
     fun startScan() {
         _isScanning.value = true
         _devices.value = listOf()
+
         val scanFilter = ScanFilter.Builder().build()
         val scanFilters = mutableListOf<ScanFilter>()
         scanFilters.add(scanFilter)
-        val scanSettings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
+        val scanSettings = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
+                .setReportDelay(0) // 立即上报结果
+                .setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED) // 启用所有PHY支持
+                .setLegacy(false) // 明确关闭传统广播模式
+                .build()
+        } else {
+            ScanSettings.Builder()
+                .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
+                .build()
+        }
         bleScanner?.startScan(scanFilters, scanSettings, scanCallback)
     }
 
@@ -164,15 +172,18 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     @SuppressLint("MissingPermission")
-    fun write(characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+    fun write(characteristic: BLECharacteristic, value: ByteArray) {
 
     }
 
     @SuppressLint("MissingPermission")
-    fun read(characteristic: BluetoothGattCharacteristic) {
-
+    fun read(characteristic: BLECharacteristic) {
+        bleService?.readCharacteristic(characteristic)
     }
 
+    fun onToggleNotify(characteristic: BLECharacteristic, enable: Boolean) {
+        bleService?.enableNotifications(characteristic, enable)
+    }
 
     override fun onCleared() {
         super.onCleared()

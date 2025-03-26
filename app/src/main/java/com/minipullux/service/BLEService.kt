@@ -14,13 +14,10 @@ import android.bluetooth.BluetoothProfile
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Binder
-import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.ActivityCompat
-import androidx.lifecycle.MutableLiveData
 import com.minipullux.BLEDevice
-import com.minipullux.isCharacteristicNotifiable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -92,13 +89,6 @@ class BLEService : Service() {
                 Manifest.permission.BLUETOOTH_CONNECT
             ) != PackageManager.PERMISSION_GRANTED
         ) {
-            // TODO: Consider calling
-            //    ActivityCompat#requestPermissions
-            // here to request the missing permissions, and then overriding
-            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
-            //                                          int[] grantResults)
-            // to handle the case where the user grants the permission. See the documentation
-            // for ActivityCompat#requestPermissions for more details.
             return
         }
         gatt = device.connectGatt(this, false, gattCallback, TRANSPORT_LE)
@@ -110,13 +100,6 @@ class BLEService : Service() {
                 Manifest.permission.BLUETOOTH_CONNECT
             ) != PackageManager.PERMISSION_GRANTED
         ) {
-            // TODO: Consider calling
-            //    ActivityCompat#requestPermissions
-            // here to request the missing permissions, and then overriding
-            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
-            //                                          int[] grantResults)
-            // to handle the case where the user grants the permission. See the documentation
-            // for ActivityCompat#requestPermissions for more details.
             return
         }
         gatt?.disconnect()
@@ -150,13 +133,6 @@ class BLEService : Service() {
                 Manifest.permission.BLUETOOTH_CONNECT
             ) != PackageManager.PERMISSION_GRANTED
         ) {
-            // TODO: Consider calling
-            //    ActivityCompat#requestPermissions
-            // here to request the missing permissions, and then overriding
-            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
-            //                                          int[] grantResults)
-            // to handle the case where the user grants the permission. See the documentation
-            // for ActivityCompat#requestPermissions for more details.
             return
         }
         synchronized(characteristic) {
@@ -165,28 +141,23 @@ class BLEService : Service() {
         }
     }
 
-    fun enableNotifications(characteristic: BluetoothGattCharacteristic) {
+    fun enableNotifications(characteristic: BLECharacteristic, enable: Boolean) {
         if (ActivityCompat.checkSelfPermission(
                 this,
                 Manifest.permission.BLUETOOTH_CONNECT
             ) != PackageManager.PERMISSION_GRANTED
         ) {
-            // TODO: Consider calling
-            //    ActivityCompat#requestPermissions
-            // here to request the missing permissions, and then overriding
-            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
-            //                                          int[] grantResults)
-            // to handle the case where the user grants the permission. See the documentation
-            // for ActivityCompat#requestPermissions for more details.
             return
         }
-        gatt?.setCharacteristicNotification(characteristic, true)
-        val descriptor = characteristic.getDescriptor(CCCD_UUID)
-        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-        gatt?.writeDescriptor(descriptor)
+        val gattCharacteristic = gatt!!.getService(SERVER_UUID).getCharacteristic(characteristic.uuid)
+        gatt?.setCharacteristicNotification(gattCharacteristic, enable)
+        gattCharacteristic.getDescriptor(CCCD_UUID).let {
+            it.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            gatt?.writeDescriptor(it)
+        }
     }
 
-    fun readCharacteristic(characteristic: BluetoothGattCharacteristic) {
+    fun readCharacteristic(characteristic: BLECharacteristic) {
         if (ActivityCompat.checkSelfPermission(
                 this,
                 Manifest.permission.BLUETOOTH_CONNECT
@@ -194,34 +165,32 @@ class BLEService : Service() {
         ) {
             return
         }
-        gatt?.readCharacteristic(characteristic)
+        val gattCharacteristic = gatt!!.getService(SERVER_UUID).getCharacteristic(characteristic.uuid)
+        gatt?.readCharacteristic(gattCharacteristic)
     }
 
     // 创建特征的方法
-    private fun createCharacteristics(): List<BluetoothGattCharacteristic> {
-        val service = BluetoothGattService(SERVER_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
-
-        val gnssCharacteristic = BluetoothGattCharacteristic(
+    private fun createCharacteristics(): List<BLECharacteristic> {
+        val gnssCharacteristic = BLECharacteristic(
             CHAR_GNSS_UUID,
             BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
-            BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE
+            BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE,
+            false
         )
 
-        val ctrlCharacteristic = BluetoothGattCharacteristic(
+        val ctrlCharacteristic = BLECharacteristic(
             CHAR_CTRL_UUID,
             BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_INDICATE,
-            BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE
+            BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE,
+            false
         )
 
-        val otaCharacteristic = BluetoothGattCharacteristic(
+        val otaCharacteristic = BLECharacteristic(
             CHAR_OTA_UUID,
             BluetoothGattCharacteristic.PROPERTY_WRITE,
-            BluetoothGattCharacteristic.PERMISSION_WRITE
+            BluetoothGattCharacteristic.PERMISSION_WRITE,
+            false
         )
-
-        service.addCharacteristic(gnssCharacteristic)
-        service.addCharacteristic(ctrlCharacteristic)
-        service.addCharacteristic(otaCharacteristic)
 
         return listOf(gnssCharacteristic, ctrlCharacteristic, otaCharacteristic)
     }
@@ -248,23 +217,6 @@ class BLEService : Service() {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 gatt.printGattTable()
                 // 处理服务发现
-                val characteristic = gatt.getService(SERVER_UUID).getCharacteristic(CHAR_GNSS_UUID)
-                // 开启GNSS服务通知
-                gatt.setCharacteristicNotification(
-                    characteristic,
-                    true
-                )
-                val descriptor =
-                    characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt.writeDescriptor(descriptor) // 或使用 gatt.writeDescriptor 异步写入
-
-//                gatt.services?.forEach { service ->
-//                    service.characteristics.forEach { characteristic ->
-//                        if (isCharacteristicNotifiable(characteristic))
-//                            gatt.setCharacteristicNotification(characteristic, true)
-//                    }
-//                }
             }
         }
 
@@ -344,11 +296,10 @@ class BLEService : Service() {
     }
 
     companion object {
-        val SERVER_UUID = makeUuid(0x2001)
-        val CHAR_GNSS_UUID = makeUuid(0x2906)
-
-        //        val SERVER_UUID = makeUuid(0x00FF)
-//        val CHAR_GNSS_UUID = makeUuid(0xFF01)
+        //        val SERVER_UUID = makeUuid(0x2001)
+//        val CHAR_GNSS_UUID = makeUuid(0x2906)
+        val SERVER_UUID = makeUuid(0x00FF)
+        val CHAR_GNSS_UUID = makeUuid(0xFF01)
         val CHAR_CTRL_UUID = makeUuid(0xFF02)
         val CHAR_OTA_UUID = makeUuid(0xFF03)
     }
