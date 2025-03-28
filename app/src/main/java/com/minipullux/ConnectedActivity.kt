@@ -2,23 +2,32 @@ package com.minipullux
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothGattCharacteristic
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -28,37 +37,49 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldColors
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -68,10 +89,13 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
@@ -79,9 +103,14 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.minipullux.service.BLECharacteristic
+import com.minipullux.service.BLEService
 import com.minipullux.ui.theme.CyberpunkTheme
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.UUID
 import kotlin.random.Random
 
@@ -101,6 +130,30 @@ class ConnectedActivity : ComponentActivity() {
                 }
             }
         }
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.connectionEvent.collect { event ->
+                    event.getContentIfNotHandled()?.let { state ->
+                        when (state) {
+                            BLEService.ConnectionState.DISCONNECTED -> {
+                                // 跳转到新 Activity
+                                startActivity(
+                                    Intent(
+                                        this@ConnectedActivity,
+                                        MainActivity::class.java
+                                    )
+                                )
+                                finish() // 可选：关闭当前 Activity
+                            }
+
+                            else -> { /* 其他状态处理 */
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -109,20 +162,57 @@ fun ConnectedScreen(
     viewModel: BLEViewModel,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val characteristics by viewModel.characteristics.collectAsState()
     val values by viewModel.values.collectAsState()
-    ConnectedContent(
-        characteristics = characteristics,
-        values = values,
-        onRead = { viewModel.read(it) },
-        onWrite = { char, value -> viewModel.write(char, value) },
-        onToggleNotify = { characteristic, enable ->
-            viewModel.onToggleNotify(
-                characteristic,
-                enable
-            )
+    val progress by viewModel.otaProgress.collectAsState()
+
+    var showOtaDialog by remember { mutableStateOf(false) }
+    var otaFileBytes by remember { mutableStateOf<ByteArray?>(null) }
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let {
+            // 从URI读取文件内容（需实现实际读取逻辑）
+            otaFileBytes = readFileFromUri(context, it)
+            showOtaDialog = true
         }
-    )
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        CyberpunkOtaButton(
+            onClick = { filePickerLauncher.launch("*/*") },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp)
+        )
+        ConnectedContent(
+            characteristics = characteristics,
+            values = values,
+            onRead = { viewModel.read(it) },
+            onWrite = { char, value -> viewModel.write(char, value) },
+            onToggleNotify = { characteristic, enable ->
+                viewModel.onToggleNotify(
+                    characteristic,
+                    enable
+                )
+            }
+        )
+    }
+
+    // OTA确认对话框
+    if (showOtaDialog) {
+        CyberpunkOtaDialog(
+            progress = progress,
+            onDismiss = { showOtaDialog = false },
+            onConfirm = {
+                otaFileBytes?.let { bytes ->
+                    viewModel.update(bytes)
+                }
+//                showOtaDialog = false
+            }
+        )
+    }
 }
 
 fun ByteArray.toHexString(): String =
@@ -149,15 +239,53 @@ fun ConnectedContentPre() {
         characteristic1.uuid to "Sample value 1".toByteArray(),
         characteristic2.uuid to "Sample value 2".toByteArray()
     )
-
+    var showOtaDialog by remember { mutableStateOf(false) }
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let {
+            showOtaDialog = true
+        }
+    }
     CyberpunkTheme {
-        ConnectedContent(
-            characteristics = characteristics,
-            values = values,
-            onRead = { /* 预览中不处理实际逻辑 */ },
-            onWrite = { _, _ -> /* 预览中不处理实际逻辑 */ },
-            onToggleNotify = { _, _ ->/* 预览中不处理实际逻辑 */ }
-        )
+        Column(modifier = Modifier.fillMaxSize()) {
+            CyberpunkOtaButton(
+                onClick = { filePickerLauncher.launch("*/*") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp)
+            )
+            ConnectedContent(
+                characteristics = characteristics,
+                values = values,
+                onRead = { /* 预览中不处理实际逻辑 */ },
+                onWrite = { _, _ -> /* 预览中不处理实际逻辑 */ },
+                onToggleNotify = { _, _ ->/* 预览中不处理实际逻辑 */ }
+            )
+        }
+
+        var progress by remember { mutableFloatStateOf(0f) }
+        val coroutineScope = rememberCoroutineScope()
+        // OTA确认对话框
+        if (showOtaDialog) {
+            CyberpunkOtaDialog(
+                progress = progress,
+                onDismiss = { showOtaDialog = false },
+                onConfirm = {
+                    //携程模拟progress进度
+                    coroutineScope.launch {
+                        // 线性进度模拟
+                        while (progress < 1f) {
+                            delay(500) // 每500ms更新一次
+                            progress += 0.1f
+                            progress = progress.coerceAtMost(1f)
+                        }
+                        showOtaDialog = false
+                        progress = 0f
+                    }
+                }
+            )
+        }
     }
 }
 
@@ -193,15 +321,23 @@ private fun ConnectedContent(
 
     selectedChar?.let { char ->
         CyberpunkWriteDialog(
-            title = "char.service",
-            message = "char.value",
+            title = char.uuid.toString(),
+            message = "",
             onDismiss = { selectedChar = null },
-            onConfirm = { value ->
-                onWrite(char, value.toByteArray())
+            onConfirm = {
+                if (it.isNotEmpty()) onWrite(char, it.hexStringToByteArray())
                 selectedChar = null
             }
         )
     }
+}
+
+fun String.hexStringToByteArray(): ByteArray {
+    val trimmed = this.replace("\\s".toRegex(), "") // 可选：移除空格
+    require(trimmed.length % 2 == 0) { "长度需为偶数" }
+    return trimmed.chunked(2).map {
+        it.toInt(16).toByte()
+    }.toByteArray()
 }
 
 enum class CharacteristicAction {
@@ -416,19 +552,6 @@ fun MarqueeText(
             )
 
         }
-        // 自动检测内容宽度
-//        Text(
-//            text = text,
-//            color = Color.Transparent,
-//            fontSize = fontSize,
-//            modifier = Modifier
-//                .alpha(0f)
-//                .onGloballyPositioned { layoutCoordinates ->
-//                    val contentWidth = layoutCoordinates.size.width
-//                    val containerWidth = layoutCoordinates.parentCoordinates?.size?.width ?: 0
-//                    shouldScroll = contentWidth > containerWidth
-//                }
-//        )
     }
 }
 
@@ -582,7 +705,7 @@ fun Modifier.hoverCyberpunkEffect(
 
 fun Modifier.glitchEffect() = composed {
     val density = LocalDensity.current
-    val infiniteTransition = rememberInfiniteTransition()
+    val infiniteTransition = rememberInfiniteTransition(label = "")
     val offsetX by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 4f,
@@ -594,7 +717,7 @@ fun Modifier.glitchEffect() = composed {
                 -3f at 400
                 0f at 600
             }
-        )
+        ), label = ""
     )
     val offsetY by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -607,7 +730,7 @@ fun Modifier.glitchEffect() = composed {
                 3f at 500
                 0f at 700
             }
-        )
+        ), label = ""
     )
 
     this.graphicsLayer {
@@ -626,7 +749,7 @@ fun Modifier.cyberpunkBorderEffect(
     glowColor: Color = Color(0xFFFF00FF),
     thickness: Dp = 2.dp
 ) = composed {
-    val infiniteTransition = rememberInfiniteTransition()
+    val infiniteTransition = rememberInfiniteTransition(label = "")
     val glowIntensity by infiniteTransition.animateFloat(
         initialValue = 0.5f,
         targetValue = 1f,
@@ -637,7 +760,7 @@ fun Modifier.cyberpunkBorderEffect(
                 1f at 500
                 0.8f at 1000
             }
-        )
+        ), label = ""
     )
 
     this.drawBehind {
@@ -664,6 +787,17 @@ fun Modifier.cyberpunkBorderEffect(
 }
 
 @Composable
+@Preview
+fun CyberpunkWriteDialogPre() {
+    CyberpunkWriteDialog(
+        title = "0000ff01-0000-1000-8000-00805F9B34FB",
+        message = "",
+        onConfirm = {},
+        onDismiss = {}
+    )
+}
+
+@Composable
 fun CyberpunkWriteDialog(
     title: String,
     message: String,
@@ -679,13 +813,40 @@ fun CyberpunkWriteDialog(
             animation = tween(2000, easing = LinearEasing)
         ), label = ""
     )
-
+    var inputText by remember { mutableStateOf("") }
+    val isValidHex = remember(inputText) {
+        inputText.matches("^[0-9A-Fa-f]*$".toRegex()) && inputText.length % 2 == 0
+    }
+    val textFieldColors = TextFieldDefaults.colors(
+        focusedContainerColor = Color.Transparent,
+        unfocusedContainerColor = Color.Transparent,
+        disabledContainerColor = Color.Transparent,
+        focusedIndicatorColor = Color.Transparent,
+        unfocusedIndicatorColor = Color.Transparent,
+        cursorColor = Color(0xFF00FFE0)
+    )
     Dialog(onDismissRequest = onDismiss) {
+        val scanlineProgress by infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(2000, easing = LinearEasing)
+            ), label = ""
+        )
         Box(
             modifier = modifier
                 .cyberpunkBorderEffect()  // 自定义边框效果
                 .background(Color(0xFF0A0A1A))
                 .padding(24.dp)
+                .drawBehind {
+                    // 绘制扫描线动画
+                    drawLine(
+                        color = Color(0xFF00FFE0).copy(alpha = 0.3f),
+                        start = Offset(0f, size.height * scanlineProgress),
+                        end = Offset(size.width, size.height * scanlineProgress),
+                        strokeWidth = 2.dp.toPx()
+                    )
+                }
         ) {
             // 数字雨背景
 //            DigitalRainBackground(modifier = Modifier.matchParentSize())
@@ -699,28 +860,77 @@ fun CyberpunkWriteDialog(
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
 
-                // 消息内容带扫描线
-//                BoxWithConstraints {
-//                    CyberpunkScrollingText(
-//                        text = message,
-//                        scanOffset = scanlineOffset,
-//                        modifier = Modifier
-//                            .heightIn(max = maxHeight * 0.6f)
-//                            .fillMaxWidth()
-//                    )
-//                }
-
+                // 新增十六进制输入框
+                CyberpunkTextField(
+                    value = inputText,
+                    onValueChange = { newValue ->
+                        inputText = newValue
+                            .uppercase()
+                            .filter { it.isLetterOrDigit() }
+                    },
+                    label = "HEX DATA",
+                    isValid = isValidHex,
+                    colors = textFieldColors,
+                    modifier = Modifier
+                        .padding(vertical = 8.dp)
+                        .cyberpunkBorderEffect(
+                            baseColor = if (isValidHex) Color(0xFF00FFE0) else Color(0xFFFF0044)
+                        )
+                )
                 // 确认按钮
                 CyberpunkButton(
                     text = "CONFIRM",
-                    onClick = onDismiss,
+                    onClick = { onConfirm(inputText) },
                     modifier = Modifier.align(Alignment.End)
                 )
             }
-
-            // 扫描线效果
-//            DrawScanlines(scanOffset = scanlineOffset)
         }
+    }
+}
+
+// 自定义赛博朋克风格输入框
+@Composable
+private fun CyberpunkTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    isValid: Boolean,
+    colors: TextFieldColors,
+    modifier: Modifier = Modifier
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val strokeWidth = 2.dp
+    val focusRequester = remember { FocusRequester() }
+    var hasFocus by remember { mutableStateOf(false) }
+
+    Box(modifier.padding(strokeWidth)) {
+        TextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = {
+                Text(
+                    text = label,
+                    color = Color(0xFF00FFE0).copy(alpha = 0.7f)
+                )
+            },
+            colors = colors,
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Ascii,
+                imeAction = ImeAction.Done
+            ),
+            textStyle = LocalTextStyle.current.copy(
+                color = Color(0xFF00FFE0),
+                fontFamily = FontFamily.Monospace
+            ),
+            interactionSource = interactionSource,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.Transparent)
+                .focusRequester(focusRequester)
+                .onFocusChanged { hasFocus = it.isFocused }
+                .focusable(),
+        )
     }
 }
 
@@ -768,20 +978,57 @@ fun CyberpunkTypewriterText(
 
     Box(modifier) {
         Text(
+            fontSize = 13.sp,
             text = text.take(visibleChars),
             style = textStyle,
             modifier = Modifier
                 .glitchEffect()  // 故障效果
-//                .blurBorder()
         )
+    }
+}
 
-        // 光标闪烁
-//        if (visibleChars < text.length) {
-//            BlinkingCursor(
-//                modifier = Modifier
-//                    .offset(x = 4.dp)
-//                    .align(Alignment.CenterStart)
-//            )
-//        }
+@Composable
+fun BlinkingCursor(
+    modifier: Modifier = Modifier,
+    cursorColor: Color = Color(0xFF00FFE0),
+    cursorWidth: Dp = 2.dp,
+    animationDuration: Int = 800
+) {
+    // 创建无限闪烁动画
+    val infiniteTransition = rememberInfiniteTransition(label = "")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(
+                durationMillis = animationDuration,
+                easing = FastOutSlowInEasing
+            ),
+            repeatMode = RepeatMode.Reverse
+        ), label = ""
+    )
+
+    // 光标图形绘制
+    Box(modifier = modifier) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(cursorWidth)
+        ) {
+            drawRect(
+                color = cursorColor.copy(alpha = alpha),
+                size = Size(cursorWidth.toPx(), size.height)
+            )
+        }
+    }
+}
+
+// 文件读取工具函数（需在Activity中处理实际文件读取）
+private fun readFileFromUri(context: Context, uri: Uri): ByteArray? {
+    return try {
+        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+    } catch (e: Exception) {
+        e.printStackTrace()
+        null
     }
 }

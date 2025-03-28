@@ -67,13 +67,6 @@ class BLEService : Service() {
                 Manifest.permission.BLUETOOTH_CONNECT
             ) != PackageManager.PERMISSION_GRANTED
         ) {
-            // TODO: Consider calling
-            //    ActivityCompat#requestPermissions
-            // here to request the missing permissions, and then overriding
-            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
-            //                                          int[] grantResults)
-            // to handle the case where the user grants the permission. See the documentation
-            // for ActivityCompat#requestPermissions for more details.
             return
         }
         gatt?.close()
@@ -102,14 +95,43 @@ class BLEService : Service() {
         ) {
             return
         }
+        _connectionState.value = ConnectionState.DISCONNECTED
         gatt?.disconnect()
         gatt?.close() // 明确释放资源
         gatt = null
     }
 
+    fun setMTU(mtu: Int) {
+        if (ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        gatt?.requestMtu(mtu)
+    }
+
+    fun asyncWriteCharacteristic(characteristic: BLECharacteristic, value: ByteArray) {
+        if (ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        val gattCharacteristic =
+            gatt!!.getService(SERVER_UUID).getCharacteristic(characteristic.uuid)
+        gattCharacteristic.value = value
+        gatt?.writeCharacteristic(gattCharacteristic)
+    }
+
     // 在BLEService中添加
-    fun writeCharacteristic(characteristic: BluetoothGattCharacteristic, value: ByteArray) {
-        writeQueue.add(characteristic to value)
+    fun writeCharacteristic(characteristic: BLECharacteristic, value: ByteArray) {
+        val gattCharacteristic =
+            gatt!!.getService(SERVER_UUID).getCharacteristic(characteristic.uuid)
+        writeQueue.add(gattCharacteristic to value)
         if (!isWriting) {
             processWriteQueue()
         }
@@ -119,7 +141,7 @@ class BLEService : Service() {
         CoroutineScope(Dispatchers.IO).launch {
             while (!writeQueue.isEmpty()) {
                 isWriting = true
-                val (char, data) = writeQueue.poll()!!
+                val (char, data) = writeQueue.poll() ?: break // 安全取出元素
                 performSafeWrite(char, data)
                 delay(50) // 根据MTU调整间隔
             }
@@ -149,7 +171,8 @@ class BLEService : Service() {
         ) {
             return
         }
-        val gattCharacteristic = gatt!!.getService(SERVER_UUID).getCharacteristic(characteristic.uuid)
+        val gattCharacteristic =
+            gatt!!.getService(SERVER_UUID).getCharacteristic(characteristic.uuid)
         gatt?.setCharacteristicNotification(gattCharacteristic, enable)
         gattCharacteristic.getDescriptor(CCCD_UUID).let {
             it.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
@@ -165,7 +188,8 @@ class BLEService : Service() {
         ) {
             return
         }
-        val gattCharacteristic = gatt!!.getService(SERVER_UUID).getCharacteristic(characteristic.uuid)
+        val gattCharacteristic =
+            gatt!!.getService(SERVER_UUID).getCharacteristic(characteristic.uuid)
         gatt?.readCharacteristic(gattCharacteristic)
     }
 
@@ -267,6 +291,30 @@ class BLEService : Service() {
         override fun onCharacteristicRead(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.d(
+                    "BLE Server",
+                    """characteristicChanged
+                    |service ${characteristic.service.uuid}
+                    |characteristic ${characteristic.uuid}
+                    |length: ${characteristic.value.size}
+                    |${String(characteristic.value)}
+                    |${characteristic.value.toHexString()}""".trimMargin()
+                )
+                onCharacteristicReadListener?.updateBluetoothData(
+                    characteristic,
+                    characteristic.value
+                )
+            } else {
+                Log.e("BLE Server", "Characteristic read failed with status: $status")
+            }
+        }
+
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
             status: Int
         ) {
@@ -286,7 +334,9 @@ class BLEService : Service() {
             }
         }
 
-
+        override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            super.onMtuChanged(gatt, mtu, status)
+        }
     }
 
     enum class ConnectionState {
@@ -296,8 +346,6 @@ class BLEService : Service() {
     }
 
     companion object {
-        //        val SERVER_UUID = makeUuid(0x2001)
-//        val CHAR_GNSS_UUID = makeUuid(0x2906)
         val SERVER_UUID = makeUuid(0x00FF)
         val CHAR_GNSS_UUID = makeUuid(0xFF01)
         val CHAR_CTRL_UUID = makeUuid(0xFF02)

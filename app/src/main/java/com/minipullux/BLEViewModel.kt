@@ -23,6 +23,7 @@ import com.minipullux.service.BLECharacteristic
 import com.minipullux.service.BLEService
 import com.minipullux.service.BLEService.ConnectionState
 import com.minipullux.service.OnCharacteristicReadListener
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
+import kotlin.math.min
 
 class BLEViewModel(application: Application) : AndroidViewModel(application) {
     private val TAG = "BLEViewModel"
@@ -50,6 +52,9 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
     private val _values = MutableStateFlow<MutableMap<UUID, ByteArray>>(mutableMapOf())
     val values get() = _values.asStateFlow()
 
+    private val _otaProgress = MutableStateFlow(0f)
+    val otaProgress get() = _otaProgress.asStateFlow()
+
     @SuppressLint("StaticFieldLeak")
     private var bleService: BLEService? = null
     private val serviceConnection = object : ServiceConnection {
@@ -58,7 +63,7 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
             viewModelScope.launch {
                 bleService?.connectionState?.collect {
                     Log.i("BLE Viewmodel", "$it")
-                    if (it == ConnectionState.CONNECTED) {
+                    if (it == ConnectionState.CONNECTED || it == ConnectionState.DISCONNECTED) {
                         _connectionEvent.emit(Event(it))
                     }
                 }
@@ -171,18 +176,58 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
         bleScanner?.stopScan(scanCallback)
     }
 
-    @SuppressLint("MissingPermission")
-    fun write(characteristic: BLECharacteristic, value: ByteArray) {
+    @OptIn(ExperimentalStdlibApi::class)
+    fun asyncWrite(characteristic: BLECharacteristic, value: ByteArray) {
+        Log.i(TAG, "${characteristic.uuid} ${value[0].toHexString()}")
+        bleService?.asyncWriteCharacteristic(characteristic, value)
+    }
 
+    @OptIn(ExperimentalStdlibApi::class)
+    fun write(characteristic: BLECharacteristic, value: ByteArray) {
+        Log.i(TAG, "${characteristic.uuid} ${value[0].toHexString()}")
+        bleService?.writeCharacteristic(characteristic, value)
     }
 
     @SuppressLint("MissingPermission")
     fun read(characteristic: BLECharacteristic) {
+        Log.i(TAG, "read ${characteristic.uuid}")
         bleService?.readCharacteristic(characteristic)
     }
 
     fun onToggleNotify(characteristic: BLECharacteristic, enable: Boolean) {
         bleService?.enableNotifications(characteristic, enable)
+
+        _characteristics.update { currentList ->
+            currentList.map { item ->
+                if (item.uuid == characteristic.uuid) item.copy(isNotifyEnabled = enable) else item
+            }
+        }
+    }
+
+    val MTU = 124
+    fun update(bytes: ByteArray) {
+        Log.i(TAG, "update ${bytes.size}")
+        viewModelScope.launch {
+            // 1.修改mtu 2.发送20 3.分段发送数据 4.发送24
+            bleService?.setMTU(MTU)
+            delay(100)
+            write(characteristics.value[1], byteArrayOf(0x20))
+            delay(6_000)
+            var sent = 0
+            while (sent < bytes.size) {
+                val len = min(MTU - 4, bytes.size - sent)
+                asyncWrite(
+                    characteristic = characteristics.value[2],
+                    bytes.copyOfRange(sent, sent + len)
+                )
+                sent += len
+                _otaProgress.value = sent / bytes.size.toFloat()
+                println("${sent},${_otaProgress.value}")
+                delay(200)
+            }
+            delay(3_000)
+            write(characteristics.value[1], byteArrayOf(0x24))
+        }
     }
 
     override fun onCleared() {
@@ -199,6 +244,10 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
                 currentMap.toMutableMap().apply {
                     put(characteristic.uuid, data) // 原子性修改
                 }
+            }
+
+            if (characteristic.uuid == characteristics.value[1].uuid) {
+                Log.i(TAG, data.toHexString())
             }
         }
     }
