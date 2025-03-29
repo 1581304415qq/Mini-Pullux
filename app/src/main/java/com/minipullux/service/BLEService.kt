@@ -129,6 +129,7 @@ class BLEService : Service() {
 
     // 在BLEService中添加
     fun writeCharacteristic(characteristic: BLECharacteristic, value: ByteArray) {
+        if (gatt == null) return
         val gattCharacteristic =
             gatt!!.getService(SERVER_UUID).getCharacteristic(characteristic.uuid)
         writeQueue.add(gattCharacteristic to value)

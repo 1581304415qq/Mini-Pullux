@@ -131,29 +131,29 @@ class ConnectedActivity : ComponentActivity() {
             }
         }
 
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.connectionEvent.collect { event ->
-                    event.getContentIfNotHandled()?.let { state ->
-                        when (state) {
-                            BLEService.ConnectionState.DISCONNECTED -> {
-                                // 跳转到新 Activity
-                                startActivity(
-                                    Intent(
-                                        this@ConnectedActivity,
-                                        MainActivity::class.java
-                                    )
-                                )
-                                finish() // 可选：关闭当前 Activity
-                            }
-
-                            else -> { /* 其他状态处理 */
-                            }
-                        }
-                    }
-                }
-            }
-        }
+//        lifecycleScope.launch {
+//            repeatOnLifecycle(Lifecycle.State.STARTED) {
+//                viewModel.connectionEvent.collect { event ->
+//                    event.getContentIfNotHandled()?.let { state ->
+//                        when (state) {
+//                            BLEService.ConnectionState.DISCONNECTED -> {
+//                                // 跳转到新 Activity
+//                                startActivity(
+//                                    Intent(
+//                                        this@ConnectedActivity,
+//                                        MainActivity::class.java
+//                                    )
+//                                )
+//                                finish() // 可选：关闭当前 Activity
+//                            }
+//
+//                            else -> { /* 其他状态处理 */
+//                            }
+//                        }
+//                    }
+//                }
+//            }
+//        }
     }
 }
 

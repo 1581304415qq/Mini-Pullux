@@ -108,7 +108,7 @@ fun CyberpunkOtaDialog(
         ), label = ""
     )
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = {}) {
         Box(
             modifier = modifier
                 .cyberpunkBorderEffect()

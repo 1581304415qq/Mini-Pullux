@@ -19,6 +19,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.minipullux.event.EventDispatcher
 import com.minipullux.service.BLECharacteristic
 import com.minipullux.service.BLEService
 import com.minipullux.service.BLEService.ConnectionState
@@ -31,6 +32,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 import kotlin.math.min
 
 class BLEViewModel(application: Application) : AndroidViewModel(application) {
@@ -204,29 +207,76 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    val MTU = 124
+    private val dispatcher = EventDispatcher<MyEventType, MyEvent<*>>()
+    val MTU = 247
+    var seq = 0
     fun update(bytes: ByteArray) {
         Log.i(TAG, "update ${bytes.size}")
         viewModelScope.launch {
             // 1.修改mtu 2.发送20 3.分段发送数据 4.发送24
             bleService?.setMTU(MTU)
             delay(100)
-            write(characteristics.value[1], byteArrayOf(0x20))
-            delay(6_000)
+            startOta(0x20)
             var sent = 0
             while (sent < bytes.size) {
                 val len = min(MTU - 4, bytes.size - sent)
-                asyncWrite(
-                    characteristic = characteristics.value[2],
-                    bytes.copyOfRange(sent, sent + len)
-                )
+
+                var ret = seqOta((0x28 + seq).toByte())
+                while (!ret) {
+                    ret = seqOta((0x28 + seq).toByte())
+                }
+
+                ret = senOtaData(bytes.copyOfRange(sent, sent + len))
+                while (!ret) {
+                    ret = senOtaData(bytes.copyOfRange(sent, sent + len))
+                }
+
+                seq = (seq + 1) % 4
                 sent += len
                 _otaProgress.value = sent / bytes.size.toFloat()
-                println("${sent},${_otaProgress.value}")
-                delay(200)
+                println("$sent/${bytes.size}, ${_otaProgress.value}, $seq")
             }
             delay(3_000)
-            write(characteristics.value[1], byteArrayOf(0x24))
+            startOta(0x24)
+        }
+    }
+
+    private suspend fun senOtaData(data: ByteArray) = suspendCoroutine {
+        write(characteristics.value[2], data)
+        // wait 回应
+        dispatcher.once(
+            eventType = MyEventType.OtaEventSeqType,
+            timeOut = 1000,
+            onTimeOut = {
+                it.resume(false)
+            }) { event ->
+            println("ack=${event.data} seq=${seq}")
+            if (seq == event.data)
+                it.resume(true)
+            else
+                it.resume(false)
+        }
+    }
+
+    private suspend fun startOta(command: Byte) = suspendCoroutine {
+        write(characteristics.value[1], byteArrayOf(command))
+        // wait 回应
+        dispatcher.once(MyEventType.OtaEventStartType) { _ ->
+            it.resume(true)
+        }
+    }
+
+    private suspend fun seqOta(command: Byte) = suspendCoroutine {
+        write(characteristics.value[1], byteArrayOf(command))
+        // wait 回应
+        dispatcher.once(MyEventType.OtaEventSeqType,
+            timeOut = 1000, onTimeOut = {
+                it.resume(false)
+            }) { event ->
+            if (event.data == 0)
+                it.resume(true)
+            else
+                it.resume(false)
         }
     }
 
@@ -248,6 +298,36 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
 
             if (characteristic.uuid == characteristics.value[1].uuid) {
                 Log.i(TAG, data.toHexString())
+                data.forEach {
+                    if ((it.toInt() and 0xFC) == 0x20) {
+                        dispatcher.dispatch(
+                            MyEventType.OtaEventStartType,
+                            MyEvent.OtaEvent(it.toInt() and 0x3)
+                        )
+                    } else if ((it.toInt() and 0xFC) == 0x24) {
+                        dispatcher.dispatch(
+                            MyEventType.OtaEventEndType,
+                            MyEvent.OtaEvent(it.toInt() and 0x3)
+                        )
+                    } else if ((it.toInt() and 0xFC) == 0x28) {
+                        dispatcher.dispatch(
+                            MyEventType.OtaEventSeqType,
+                            MyEvent.OtaEvent(it.toInt() and 0x3)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    class Event<out T>(private val content: T) {
+        var hasBeenHandled = false
+            private set
+
+        fun getContentIfNotHandled(): T? {
+            return if (hasBeenHandled) null else {
+                hasBeenHandled = true
+                content
             }
         }
     }
@@ -273,18 +353,6 @@ data class BLEDevice(
                 address = device.address,
                 rssi = -1 // 需要从扫描结果获取
             )
-        }
-    }
-}
-
-open class Event<out T>(private val content: T) {
-    var hasBeenHandled = false
-        private set
-
-    fun getContentIfNotHandled(): T? {
-        return if (hasBeenHandled) null else {
-            hasBeenHandled = true
-            content
         }
     }
 }
