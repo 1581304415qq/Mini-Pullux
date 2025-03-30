@@ -208,7 +208,7 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    val MTU = 128//247
+    val MTU = 247
     private var seq = 0
     private val dispatcher = EventDispatcher<MyEventType, MyEvent<*>>()
     private var otaUpdateJob: Job? = null
@@ -261,8 +261,7 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
         write(characteristics.value[2], data)
         // wait 回应
         dispatcher.once(
-//            eventType = MyEventType.OtaEventSeqType,
-            eventType = MyEventType.OtaEventStartType,
+            eventType = MyEventType.OtaEventSeqType,
             timeOut = 1000,
             onTimeOut = {
                 it.resume(false)
@@ -278,8 +277,13 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun startOta(command: Byte) = suspendCoroutine {
         write(characteristics.value[1], byteArrayOf(command))
         // wait 回应
-        dispatcher.once(MyEventType.OtaEventStartType) { _ ->
-            it.resume(true)
+        dispatcher.once(MyEventType.OtaEventStartType,
+            timeOut = 1000,
+            onTimeOut = { it.resume(false) }) { event ->
+            if (event.data == 0)
+                it.resume(true)
+            else
+                it.resume(false)
         }
     }
 
