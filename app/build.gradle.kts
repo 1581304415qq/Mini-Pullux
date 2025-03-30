@@ -4,6 +4,14 @@ plugins {
 }
 
 android {
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("/home/mac/Xspace/workspace/MiniPullux/pulluxkey.jks")
+            storePassword = "123321"
+            keyAlias = "key0"
+            keyPassword = "123321"
+        }
+    }
     namespace = "com.minipullux"
     compileSdk = 35
 

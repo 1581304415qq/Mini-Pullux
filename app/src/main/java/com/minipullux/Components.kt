@@ -97,7 +97,6 @@ fun CyberpunkOtaDialog(
     modifier: Modifier = Modifier
 ) {
     var isUpgrading by remember { mutableStateOf(true) }
-//    var progress by remember { mutableFloatStateOf(0f) }
 
     val infiniteTransition = rememberInfiniteTransition(label = "")
     val scanlineProgress by infiniteTransition.animateFloat(
@@ -161,11 +160,11 @@ fun CyberpunkOtaDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     CyberpunkButton(
-                        text = "取消",
+                        text = if (progress == 0f) "取消" else "取消升级",
                         onClick = onDismiss,
                         modifier = Modifier.padding(end = 8.dp)
                     )
-                    CyberpunkButton(
+                    if (progress == 0f) CyberpunkButton(
                         text = "开始升级",
                         onClick = onConfirm
                     )

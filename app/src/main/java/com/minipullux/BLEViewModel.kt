@@ -24,6 +24,7 @@ import com.minipullux.service.BLECharacteristic
 import com.minipullux.service.BLEService
 import com.minipullux.service.BLEService.ConnectionState
 import com.minipullux.service.OnCharacteristicReadListener
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -207,12 +208,17 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    val MTU = 128//247
+    private var seq = 0
     private val dispatcher = EventDispatcher<MyEventType, MyEvent<*>>()
-    val MTU = 247
-    var seq = 0
+    private var otaUpdateJob: Job? = null
     fun update(bytes: ByteArray) {
         Log.i(TAG, "update ${bytes.size}")
-        viewModelScope.launch {
+        otaUpdateJob?.cancel() // 取消之前的任务
+        otaUpdateJob = viewModelScope.launch {
+            // 添加最大重试次数（例如5次）
+            val maxRetries = 5
+            var attempt = 0
             // 1.修改mtu 2.发送20 3.分段发送数据 4.发送24
             bleService?.setMTU(MTU)
             delay(100)
@@ -222,18 +228,23 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
                 val len = min(MTU - 4, bytes.size - sent)
 
                 var ret = seqOta((0x28 + seq).toByte())
-                while (!ret) {
+                while (!ret && attempt < maxRetries) {
                     ret = seqOta((0x28 + seq).toByte())
+                    attempt++
+                    delay(100)
                 }
 
+                attempt = 0
                 ret = senOtaData(bytes.copyOfRange(sent, sent + len))
-                while (!ret) {
+                while (!ret && attempt < maxRetries) {
                     ret = senOtaData(bytes.copyOfRange(sent, sent + len))
+                    attempt++
+                    delay(100)
                 }
 
                 seq = (seq + 1) % 4
                 sent += len
-                _otaProgress.value = sent / bytes.size.toFloat()
+                _otaProgress.value = sent.toFloat() / bytes.size
                 println("$sent/${bytes.size}, ${_otaProgress.value}, $seq")
             }
             delay(3_000)
@@ -241,16 +252,22 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateCancel() {
+        otaUpdateJob?.cancel()
+        otaUpdateJob = null
+    }
+
     private suspend fun senOtaData(data: ByteArray) = suspendCoroutine {
         write(characteristics.value[2], data)
         // wait 回应
         dispatcher.once(
-            eventType = MyEventType.OtaEventSeqType,
+//            eventType = MyEventType.OtaEventSeqType,
+            eventType = MyEventType.OtaEventStartType,
             timeOut = 1000,
             onTimeOut = {
                 it.resume(false)
             }) { event ->
-            println("ack=${event.data} seq=${seq}")
+            Log.i(TAG, "ack=${event.data} seq=${seq}")
             if (seq == event.data)
                 it.resume(true)
             else
@@ -297,7 +314,7 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             if (characteristic.uuid == characteristics.value[1].uuid) {
-                Log.i(TAG, data.toHexString())
+                Log.i(TAG, "ctrl channel recv:${data.toHexString()}")
                 data.forEach {
                     if ((it.toInt() and 0xFC) == 0x20) {
                         dispatcher.dispatch(
@@ -321,7 +338,7 @@ class BLEViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     class Event<out T>(private val content: T) {
-        var hasBeenHandled = false
+        private var hasBeenHandled = false
             private set
 
         fun getContentIfNotHandled(): T? {
